@@ -13,58 +13,6 @@ identificador del usuario (`X-User-Id`, tomado de una cookie `HttpOnly`) y reenv
 El backend rechaza con `401` cualquier llamada que no traiga la llave, y no habilita CORS, por lo que un
 navegador tampoco podría llamarlo directamente.
 
-## Estructura
-
-```
-backend/    Spring Boot 3.5 · Java 21
-frontend/   React 19 + TypeScript + Vite · Gateway serverless para Vercel
-```
-
-## Backend
-
-### Patrón Proxy
-
-| Rol del patrón | Clase |
-| --- | --- |
-| Interfaz común (Subject) | `ai/AIGenerationService` → `generate(GenerationRequest): GenerationResponse` |
-| Objeto real (RealSubject) | `ai/MockAIGenerationService` → `Thread.sleep(1200ms)` y texto aleatorio predefinido |
-| Proxy 1 | `ai/proxy/RateLimitProxyService` → N requests/minuto según plan, si supera lanza `429` + `Retry-After` |
-| Proxy 2 | `ai/proxy/QuotaProxyService` → verifica cuota mensual, descuenta tokens, si se agota lanza `402` |
-| Composición de la cadena | `config/AiServiceConfiguration` → `RateLimit → Quota → Mock` |
-
-### Planes (`account/Plan`)
-
-| Plan | Requests/min | Tokens/mes |
-| --- | --- | --- |
-| FREE | 10 | 50.000 |
-| PRO | 60 | 500.000 |
-| ENTERPRISE | ilimitado | ilimitado |
-
-### Endpoints
-
-| Método | Ruta | Descripción |
-| --- | --- | --- |
-| POST | `/api/ai/generate` | Pasa por el proxy chain completo. Body: `{ "prompt": "..." }` |
-| GET | `/api/quota/status` | Tokens usados, tokens restantes, `resetDate`, plan actual (y estado del rate limit) |
-| GET | `/api/quota/history` | Uso diario de los últimos 7 días |
-| POST | `/api/quota/upgrade` | Upgrade de plan FREE → PRO (`409` si no aplica) |
-| GET | `/actuator/health` | Health check para Railway (público) |
-
-Todas las rutas `/api/*` exigen los encabezados `X-Gateway-Key` y `X-User-Id` (UUID).
-
-### Tareas programadas (`scheduling/UsageResetScheduler`)
-
-- Cada minuto (`0 * * * * *`): reinicia los contadores de rate limit.
-- El primer día de cada mes a medianoche (`0 0 0 1 * *`): reinicia la cuota mensual de tokens.
-
-### Ejecutar localmente
-
-```bash
-cd backend
-GATEWAY_API_KEY=dev-key mvn spring-boot:run
-mvn test
-```
-
 ## Frontend
 
 - Interfaz tipo chat para enviar prompts.
@@ -89,38 +37,17 @@ bundle del navegador.
 ### Ejecutar localmente
 
 ```bash
-cd frontend
 cp .env.example .env.local
 npm install
 npm run dev
 ```
 
-## Despliegue en producción
-
-### 1. Backend en Railway
-
-1. Sube el repositorio a GitHub.
-2. En Railway: **New Project → Deploy from GitHub repo**.
-3. En el servicio: **Settings → Root Directory** = `backend`. Railway usa el `Dockerfile` y `railway.json`.
-4. **Variables**:
-   - `GATEWAY_API_KEY` = un secreto largo y aleatorio (por ejemplo `openssl rand -hex 32`).
-   - `APP_TIME_ZONE` = `America/Bogota` (opcional).
-5. **Settings → Networking → Generate Domain**. Copia la URL, por ejemplo `https://quota-ai-backend.up.railway.app`.
-6. Verifica: `https://<tu-dominio>/actuator/health` responde `{"status":"UP"}` y `https://<tu-dominio>/api/quota/status` responde `401`.
-
-### 2. Frontend en Vercel
+## Despliegue en Vercel
 
 1. En Vercel: **Add New → Project** e importa el mismo repositorio.
-2. **Root Directory** = `frontend`. Framework preset: Vite (lo detecta `vercel.json`).
+2. **Root Directory** = `./` (la raíz del repositorio). Framework preset: Vite (lo detecta `vercel.json`).
 3. **Environment Variables** (Production):
    - `BACKEND_URL` = la URL de Railway del paso anterior, sin `/` final.
    - `GATEWAY_API_KEY` = el mismo secreto configurado en Railway.
 4. **Deploy**.
 
-### Consideraciones
-
-- El almacenamiento es en memoria (`InMemoryUserAccountRepository`), detrás de la interfaz
-  `UserAccountRepository`. Un reinicio del backend borra el consumo; para persistirlo basta con otra
-  implementación del repositorio (por ejemplo con JPA y PostgreSQL de Railway).
-- Mantén **una sola réplica** del backend en Railway (`numReplicas: 1`), porque los contadores viven en memoria.
-- El plan ENTERPRISE existe en el dominio y en la interfaz, pero el único upgrade expuesto es FREE → PRO, como pide el enunciado.
